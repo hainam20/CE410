@@ -2,6 +2,9 @@ const mongoose = require("mongoose");
 
 const HealthDataSchema = new mongoose.Schema(
   {
+    StudentID: {
+      type: Number,
+    },
     temp: {
       type: Number,
       required: true,

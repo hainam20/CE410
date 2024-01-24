@@ -9,7 +9,7 @@ const cors = require("cors");
 const HealthDataRoute = require("./routes/HealthData");
 const events = require("./models/HealthData");
 const { emit } = require("process");
-const { log } = require("console");
+
 /**
  * Notify Route
  */
@@ -19,6 +19,7 @@ const notify = require("./models/Notify");
 // User Route
 const UserRoute = require("./routes/User");
 const User = require("./models/User");
+const { log } = require("console");
 
 const app = express();
 
@@ -53,10 +54,9 @@ async function sendDataToClient() {
   startOfWeek.setDate(
     startOfToday.getDate() -
       startOfToday.getDay() +
-      (startOfToday.getDay() === 0 ? -6 : 1)
+      (startOfToday.getDay() === 0 ? -6 : 1) -
+      1
   );
-  console.log(startOfWeek);
-
   const aggregateQuery = events.aggregate([
     {
       $match: { createdAt: { $gte: startOfWeek, $lte: startOfToday } },
@@ -68,6 +68,9 @@ async function sendDataToClient() {
         avgSPO2: { $avg: "$SPO2" },
         avgTemp: { $avg: "$temp" },
       },
+    },
+    {
+      $sort: { _id: 1 }, // Sắp xếp _id từ nhỏ đến lớn (1 là ASC, -1 là DESC)
     },
   ]);
   aggregateQuery
@@ -117,13 +120,21 @@ server.listen(PORT, async () => {
 
 const findAndEmitNotifications = async (date) => {
   const dateFind = new Date(date);
-  const startDate = dateFind.setHours(0, 0, 0, 0);
-  const endDate = dateFind.setHours(23, 59, 59, 999);
-  console.log(dateFind);
+  const startDate = new Date(dateFind);
+  startDate.setHours(0, 0, 0, 0);
+  startDate.setDate(startDate.getDate());
+  const endDate = new Date(dateFind);
+  endDate.setHours(23, 59, 59, 999);
+  console.log(startDate.toLocaleString());
+  console.log(endDate.toLocaleString());
+
   try {
-    const data = await notify.find({
-      createdAt: { $gte: startDate, $lt: endDate },
-    });
+    const data = await notify
+      .find({
+        createdAt: { $gte: startDate, $lt: endDate },
+      })
+      .sort({ createdAt: -1 })
+      .limit(10);
     if (Array.isArray(data)) {
       console.log(data);
       io.emit("notify", data);
@@ -144,37 +155,58 @@ io.on("connection", (socket) => {
   });
   // handle status Relay
 });
+const getCurrentDateFormatted = () => {
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+  const currentDate = new Date();
+  const year = currentDate.getFullYear();
+  const month = months[currentDate.getMonth()];
+  const day = currentDate.getDate();
 
+  const formattedDate = `${year} ${month} ${day}`;
+  return formattedDate;
+};
 // transmit data via MQTT into Flespi broker
 client.on("message", async (topic, message) => {
   console.log("MQTT Received message:", message.toString());
   let data = message.toString();
   data = JSON.parse(data);
-  notification(data.temp, data.SPO2, data.HR);
-  await saveData(data);
+  await notification(data.temp, data.SPO2, data.HR);
+  dateNow = getCurrentDateFormatted();
   await io.emit("health_data", data);
+  await findAndEmitNotifications(dateNow);
+  sendDataToClient();
 });
 
 //save data to mongoDB
 saveData = async (data) => {
   data = new events(data);
   data = await data.save();
-  console.log("save data to mongo", data);
 };
 
 saveNotify = async (notification) => {
   data = new notify({ Notification: notification });
   data = await data
     .save()
-    .then((result) => {
-      console.log("Saved notification: ", result);
-    })
+    .then((result) => {})
     .catch((error) => {
       console.log("error: ", error);
     });
 };
 
-notification = (temp, spo2, hr) => {
+notification = async (temp, spo2, hr) => {
   let notify;
   // notify for pulse oxymeter value
   if (spo2 < 91)
@@ -182,13 +214,15 @@ notification = (temp, spo2, hr) => {
   else if (spo2 <= 94 && spo2 >= 91)
     notify = "Thiếu máu thiếu oxy: Nồng độ oxy trong máu thấp."; //>91 - <= 94
   else notify = "Người bình thường: Nồng độ oxy trong máu ổn định.";
-  saveNotify(notify);
+  await saveNotify(notify);
+  await io.emit("notifies", { Notification: notify });
   // notify for heart rate
   if (hr < 60) notify = "Thấp bất thường: Nhịp tim cơ thể quá chậm.";
-  else if (hr > 100 && hr >= 60)
-    notify = "Cao bất thường: Nhịp tim cơ thể quá nhanh.";
-  else notify = "Mức bình thường: Nhịp tim cơ thể ổn định.";
-  saveNotify(notify);
+  else if (hr < 100 && hr >= 60)
+    notify = "Mức bình thường: Nhịp tim cơ thể ổn định.";
+  else notify = "Cao bất thường: Nhịp tim cơ thể quá nhanh.";
+  await saveNotify(notify);
+  await io.emit("notifies", { Notification: notify });
   //notify for temperaature of body
   if (temp < 27) notify = "Hạ thân nhiệt nặng: Nhiệt độ cơ thể quá thấp.";
   else if (temp < 32 && temp >= 27)
@@ -201,7 +235,8 @@ notification = (temp, spo2, hr) => {
     notify = "Sốt nhẹ: Nhiệt độ cơ thể hơi cao.";
   else if (temp <= 39 && temp > 38) notify = "Sốt cao: Nhiệt độ cơ thể cao.";
   else notify = "Sốt rất cao: Nhiệt độ cơ thể quá cao.";
-  saveNotify(notify);
+  await saveNotify(notify);
+  await io.emit("notifies", { Notification: notify });
 };
 
 app.use("/api/healthdata", HealthDataRoute);

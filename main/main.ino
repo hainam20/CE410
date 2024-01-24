@@ -144,10 +144,10 @@ void loop()
 
     //After gathering 25 new samples recalculate HR and SP02
     maxim_heart_rate_and_oxygen_saturation(irBuffer, bufferLength, redBuffer, &spo2, &validSPO2, &heartRate, &validHeartRate);
-    if(validHeartRate == 1 && validSPO2 == 1)
+    if (heartRate > 0 && temperatureC > 0 && spo2 > 0)
     {
-      publishToMQTT(temperatureC, heartRate,spo2);
-      delay(5000);
+    publishToMQTT(temperatureC, heartRate, spo2);
+    delay(5000);
     }
   }
 }

@@ -37,6 +37,7 @@ const show = (req, res, next) => {
 // add new LoRa data
 const store = (req, res, next) => {
   let healthdata = new HealthData({
+    StudentID: req.body.StudentID,
     temp: req.body.temp,
     HR: req.body.HR,
     SPO2: req.body.SPO2,
